@@ -1,4 +1,3 @@
-# app/services/model_service.py
 import os
 import io
 import tempfile
@@ -9,16 +8,17 @@ from PIL import Image
 import tensorflow as tf
 from tensorflow.keras.applications import VGG16
 from tensorflow.keras import layers, Model
-from google.cloud import storage
+import requests
+from dotenv import load_dotenv
+from urllib.parse import urlparse
 
-# -------- Config --------
+load_dotenv()
+MODEL_URL = os.getenv("MODEL_URL")
+TEST_DATA_URL = os.getenv("TEST_DATA_URL")
+
 EMBED_DIM = 128
 TARGET_SIZE = (224, 224)
 BATCH_SIZE = 16
-
-# Inisialisasi Google Cloud Storage Client
-storage_client = storage.Client()
-
 
 def get_embedding_model(input_shape=(224, 224, 3), emb_dim=128):
     base = VGG16(weights="imagenet", include_top=False, input_shape=input_shape)
@@ -27,7 +27,6 @@ def get_embedding_model(input_shape=(224, 224, 3), emb_dim=128):
     x = layers.Dense(512, activation="relu")(x)
     out = layers.Dense(emb_dim, activation=None)(x)
     return Model(base.input, out, name="VGG16_Embedding")
-
 
 def preprocess_pil(pil_img: Image.Image) -> np.ndarray:
     w, h = pil_img.size
@@ -39,7 +38,6 @@ def preprocess_pil(pil_img: Image.Image) -> np.ndarray:
     arr = np.array(img, dtype=np.float32) / 255.0
     return arr
 
-
 def list_classes(base_dir):
     return [
         d
@@ -47,6 +45,13 @@ def list_classes(base_dir):
         if os.path.isdir(os.path.join(base_dir, d))
     ]
 
+def download_file(url, suffix=""):
+    response = requests.get(url)
+    response.raise_for_status()
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp.write(response.content)
+    temp.close()
+    return temp.name
 
 class ModelService:
     def __init__(self):
@@ -55,47 +60,58 @@ class ModelService:
         self.prototypes = None
 
     def load_and_build(self):
-        # Ambil URL dari variabel lingkungan
         model_url = os.environ.get("MODEL_URL")
         test_data_url = os.environ.get("TEST_DATA_URL")
 
         if not model_url or not test_data_url:
             raise ValueError("Variabel lingkungan MODEL_URL atau TEST_DATA_URL tidak ditemukan.")
 
-        # 1. Unduh bobot model dari GCS
-        model_weights_path = "model_weights.h5"
-        print(f"Mengunduh model dari {model_url}")
-        try:
-            blob = storage_client.get_bucket(model_url.split('/')[2]).blob('/'.join(model_url.split('/')[3:]))
-            blob.download_to_filename(model_weights_path)
-            print("Bobot model berhasil diunduh.")
-        except Exception as e:
-            raise RuntimeError(f"Gagal mengunduh model: {e}")
+        # 1. Load model weights (.h5) dari URL atau lokal
+        if urlparse(model_url).scheme in ("http", "https"):
+            print(f"Mengunduh model dari {model_url}")
+            model_weights_path = download_file(model_url, suffix=".h5")
+        else:
+            print(f"Menggunakan model lokal dari {model_url}")
+            if not os.path.exists(model_url):
+                raise FileNotFoundError(f"Model file not found at {model_url}")
+            model_weights_path = model_url
 
-        # 2. Bangun arsitektur model dan muat bobot
+        # 2. Build model dan load weights
         self.embedding_model = get_embedding_model(emb_dim=EMBED_DIM)
         self.embedding_model.load_weights(model_weights_path)
         print("Model berhasil dimuat.")
 
-        # 3. Unduh dan ekstrak data untuk prototipe
+        # 3. Load test data (zip) dari URL atau lokal
         temp_dir = tempfile.mkdtemp()
-        test_zip_path = os.path.join(temp_dir, "test_data.zip")
-        print(f"Mengunduh data uji dari {test_data_url}")
-        try:
-            blob = storage_client.get_bucket(test_data_url.split('/')[2]).blob('/'.join(test_data_url.split('/')[3:]))
-            blob.download_to_filename(test_zip_path)
-            print("Data uji berhasil diunduh.")
+        if urlparse(test_data_url).scheme in ("http", "https"):
+            print(f"Mengunduh data uji dari {test_data_url}")
+            test_zip_path = download_file(test_data_url, suffix=".zip")
+        else:
+            print(f"Menggunakan data uji lokal dari {test_data_url}")
+            if not os.path.exists(test_data_url):
+                shutil.rmtree(temp_dir)
+                raise FileNotFoundError(f"Test data file not found at {test_data_url}")
+            test_zip_path = test_data_url
 
-            # Ekstrak file zip
+        # Ekstrak file zip
+        try:
             with zipfile.ZipFile(test_zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
             print("Data uji berhasil diekstrak.")
-
         except Exception as e:
             shutil.rmtree(temp_dir)
-            raise RuntimeError(f"Gagal mengunduh data uji: {e}")
-        
-        test_dir = os.path.join(temp_dir, os.listdir(temp_dir)[1])
+            raise RuntimeError(f"Gagal mengekstrak data uji: {e}")
+
+        # Cari folder data uji
+        test_dir_candidates = [
+            os.path.join(temp_dir, d)
+            for d in os.listdir(temp_dir)
+            if os.path.isdir(os.path.join(temp_dir, d))
+        ]
+        if not test_dir_candidates:
+            shutil.rmtree(temp_dir)
+            raise ValueError("Folder data uji tidak ditemukan setelah ekstraksi.")
+        test_dir = test_dir_candidates[0]
 
         # 4. Bangun prototipe
         print("Membangun prototipe...")
@@ -104,7 +120,7 @@ class ModelService:
         for cls in self.class_names:
             cdir = os.path.join(test_dir, cls)
             if not os.path.isdir(cdir): continue
-            
+
             files = [f for f in os.listdir(cdir) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
             if not files:
                 print(f"Kelas '{cls}' tidak punya gambar.")
@@ -127,13 +143,12 @@ class ModelService:
         if not all_protos:
             shutil.rmtree(temp_dir)
             raise ValueError("Tidak ada prototipe yang berhasil dibuat.")
-            
+
         self.prototypes = np.stack(all_protos, axis=0)
         shutil.rmtree(temp_dir)
-        
+
         print(f"[INFO] Kelas ditemukan: {self.class_names}")
         print(f"Ukuran prototipe: {self.prototypes.shape}")
-
 
 # Instansiasi service ini saat startup
 model_service = ModelService()

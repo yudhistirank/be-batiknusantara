@@ -1,20 +1,16 @@
 import os
-from dotenv import load_dotenv
+from flask import Flask
+from .routes.routes import bp
 
-# Memuat environment variables dari file .env
-load_dotenv()
+def create_app():
+    # Ini adalah fungsi yang membuat dan mengembalikan instance Flask
+    app = Flask(__name__)
 
-# BENAR: Mengimpor create_app langsung dari paket 'app'.
-# Python akan otomatis mencari di app/__init__.py
-from app import create_app
+    # Tambahkan variabel lingkungan Flask di sini
+    # Contoh:
+    # app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 
-# Membuat instance aplikasi
-app = create_app()
+    # Daftarkan blueprint routes
+    app.register_blueprint(bp)
 
-if __name__ == "__main__":
-    # Mengambil port dari environment atau default ke 8080
-    port = int(os.getenv("PORT", 8080))
-    debug_mode = os.getenv("FLASK_DEBUG", "True").lower() in ["true", "1"]
-    
-    print(f"[INFO] Starting Flask development server on http://0.0.0.0:{port}")
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    return app

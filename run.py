@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Menambahkan direktori induk ke jalur impor Python
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from app.utils.init import create_app
+from app import create_app
 
 load_dotenv()
 app = create_app()
