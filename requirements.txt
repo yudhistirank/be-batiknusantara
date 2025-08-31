@@ -1,0 +1,11 @@
+Flask==3.0.3
+flask-cors==4.0.1
+python-dotenv==1.0.1
+tensorflow==2.16.1
+numpy>=1.26.0
+Pillow==10.3.0
+pymongo[srv]==4.7.1
+asgiref==3.8.2
+gunicorn==22.0.0
+requests==2.32.3
+google-cloud-storage==2.16.0
